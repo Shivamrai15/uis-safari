@@ -790,12 +790,54 @@ export async function addPlaylistSongsBulk(req: Request, res: Response) {
         userId: user.userId,
         isArchived: false,
       },
+      include : {
+        _count : {
+          select : {
+            songs : true
+          }
+        }
+      }
     });
     if (!playlist) {
       return res.status(404).json({
         status: false,
         message: "Playlist not found",
         data: {},
+      });
+    }
+
+    const song = await db.song.findUnique({
+      where: {
+        id: validatedData.data.songIds[0] as string,
+      },
+      select : {
+        id : true,
+        image : true,
+        album : {
+          select : {
+            color : true
+          }
+        }
+      }
+    });
+
+    if (!song) {
+      return res.status(404).json({
+        status: false,
+        message: "Song not found",
+        data: {},
+      });
+    }
+
+    if (playlist._count.songs === 0) {
+      await db.playList.update({
+        where: {
+          id: playlist.id,
+        },
+        data: {
+          color : song.album.color,
+          image : song.image,
+        },
       });
     }
     
