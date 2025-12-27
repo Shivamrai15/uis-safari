@@ -863,3 +863,121 @@ export async function addPlaylistSongsBulk(req: Request, res: Response) {
     });
   }
 }
+
+export const getAllPlaylistSongs = async (req: Request, res: Response) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({
+        status: false,
+        message: "Unauthorized access",
+        data: {},
+      });
+    }
+    const playlistId = req.params.id;
+    if (!playlistId) {
+      return res.status(400).json({
+        status: false,
+
+        message: "Bad Request",
+        data: {},
+      });
+    }
+
+    const playlist = await db.playList.findUnique({
+      where: {
+        id: playlistId,
+        userId: user.userId,
+        isArchived: false,
+      },
+    });
+    if (!playlist) {
+
+      return res.status(404).json({
+        status: false,
+        message: "Playlist not found",
+        data: {},
+      });
+    } 
+    const playlistSongs = await db.playlistSong.findMany({
+      where: {
+        playlistId: playlist.id,
+      },
+      include: {
+        song: {
+          include: {
+            album: true,
+            artists: {  
+
+              select: {
+                id: true,
+                name: true,  
+                image: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {  
+        createdAt: "desc",
+      },
+    });
+
+    const songs = playlistSongs.map((ps) => ps.song);
+    return res.status(200).json({
+      status: true,
+      message: "Success",
+      data: songs,
+    });
+  } catch (error) {
+    console.error("GET ALL PLAYLIST SONGS API ERROR", error);
+    return res.status(500).json({
+      status: false,
+      message: "Internal Server Error",
+      data: {},
+    });
+  }
+}
+
+export const getArchivedPlaylists = async (req: Request, res: Response) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({
+        status: false,
+        message: "Unauthorized access",
+        data: {},
+      });
+    }
+
+    const archivedPlaylists = await db.playList.findMany({
+      where: {
+        userId: user.userId,
+        isArchived: true, 
+      },
+      orderBy: {
+        archivedAt: "desc",
+      },
+      include: {
+        _count: {
+          select: {
+            songs: true,
+          },
+        },
+      },
+    });
+    return res.status(200).json({
+      status: true,
+      message: "Success",
+      data: archivedPlaylists,
+    });
+  }
+  catch (error) {
+    console.error("GET ARCHIVED PLAYLISTS API ERROR", error);
+    return res.status(500).json({
+      status: false,
+      message: "Internal Server Error",
+      data: {},
+    });
+  }
+}
