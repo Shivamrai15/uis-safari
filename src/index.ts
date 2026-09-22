@@ -6,6 +6,7 @@ import { authMiddleware } from "./middlewares/auth.middleware.js";
 import { connectDB, disconnectDB } from "./lib/db.js";
 // import { connectRedis, disconnectRedis } from "./lib/redis.js";
 import { notificationRouter } from "./routes/notification.route.js";
+import { paymentRouter } from "./routes/payment.route.js";
 
 const app = express();
 app.use(express.json());
@@ -28,6 +29,7 @@ app.use("/api/v2/song", songRouter);
 app.use("/api/v2/playlist", playlistRouter);
 app.use("/api/v2/user", userRouter);
 app.use("/api/v2/notification", notificationRouter);
+app.use("/api/v2/payment", paymentRouter);
 
 async function startServer() {
     await connectDB();
