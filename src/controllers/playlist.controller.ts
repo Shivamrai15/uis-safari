@@ -2,6 +2,8 @@ import type { Request, Response } from "express";
 import { differenceInDays } from "date-fns";
 import { AddBulkSongsSchema, PlaylistSchema } from "../schemas/playlist.schema.js";
 import { db } from "../lib/db.js";
+import { authorizePlaylist, canPerform, getPlaylistRole } from "../lib/playlist-access.js";
+import { recordPlaylistChange } from "../lib/playlist-events.js";
 import type {
   Album,
   PlaylistSong,
@@ -67,8 +69,11 @@ export async function getUserPlaylists(req: Request, res: Response) {
 
     const playlists = await db.playList.findMany({
       where: {
-        userId: user.userId,
         isArchived: false,
+        OR: [
+          { userId: user.userId },
+          { members: { some: { userId: user.userId, status: "ACCEPTED" } } },
+        ],
       },
       orderBy: {
         createdAt: "desc",
@@ -79,13 +84,20 @@ export async function getUserPlaylists(req: Request, res: Response) {
             songs: true,
           },
         },
+        members: {
+          where: { userId: user.userId },
+          select: { role: true },
+        },
       },
     });
 
     return res.status(200).json({
       status: true,
       message: "Success",
-      data: playlists,
+      data: playlists.map(({ members, ...playlist }) => ({
+        ...playlist,
+        myRole: playlist.userId === user.userId ? "OWNER" : members[0]?.role ?? null,
+      })),
     });
   } catch (error) {
     console.error("GET ALL PLAYLIST API ERROR", error);
@@ -118,19 +130,9 @@ export async function getPlaylistSongs(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-      },
-      select: {
-        id: true,
-        userId: true,
-        private: true,
-        isArchived: true,
-      },
-    });
+    const access = await getPlaylistRole(user.userId, playlistId);
 
-    if (!playlist) {
+    if (!access) {
       return res.status(404).json({
         status: false,
         message: "Playlist not found",
@@ -138,8 +140,10 @@ export async function getPlaylistSongs(req: Request, res: Response) {
       });
     }
 
+    const { playlist } = access;
+
     if (
-      (playlist.private && playlist.userId !== user.userId) ||
+      (playlist.private && !canPerform(access.role, "view")) ||
       playlist.isArchived
     ) {
       return res.status(403).json({
@@ -154,6 +158,7 @@ export async function getPlaylistSongs(req: Request, res: Response) {
         album: Album;
         artists: { id: string; name: string; image: string }[];
       };
+      addedBy: { id: string; name: string | null; image: string | null } | null;
     })[] = [];
 
     const { cursor } = req.query;
@@ -181,6 +186,13 @@ export async function getPlaylistSongs(req: Request, res: Response) {
               },
             },
           },
+          addedBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+            },
+          },
         },
         orderBy: {
           createdAt: "desc",
@@ -203,6 +215,13 @@ export async function getPlaylistSongs(req: Request, res: Response) {
                   image: true,
                 },
               },
+            },
+          },
+          addedBy: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
             },
           },
         },
@@ -252,6 +271,15 @@ export async function removePlaylistSong(req: Request, res: Response) {
       });
     }
 
+    const access = await authorizePlaylist(user.userId, playlistId, "editSongs");
+    if (!access.ok) {
+      return res.status(access.status).json({
+        status: false,
+        message: access.message,
+        data: {},
+      });
+    }
+
     const firstPlaylistSong = await db.playlistSong.findMany({
       where: {
         playlistId: playlistId,
@@ -262,14 +290,20 @@ export async function removePlaylistSong(req: Request, res: Response) {
       take: 2,
     });
 
-    await db.playlistSong.delete({
+    const removed = await db.playlistSong.deleteMany({
       where: {
-        songId_playlistId: {
-          songId: songId,
-          playlistId: playlistId,
-        },
+        songId: songId,
+        playlistId: playlistId,
       },
     });
+
+    if (removed.count === 0) {
+      return res.status(404).json({
+        status: false,
+        message: "Song is not in this playlist",
+        data: {},
+      });
+    }
 
     if (firstPlaylistSong[0]?.songId === songId) {
       if (firstPlaylistSong.length === 2) {
@@ -311,6 +345,13 @@ export async function removePlaylistSong(req: Request, res: Response) {
       }
     }
 
+    void recordPlaylistChange({
+      playlist: access.playlist,
+      actorId: user.userId,
+      type: "SONG_REMOVED",
+      payload: { songId },
+    });
+
     return res.json({
       success: true,
       message: "Song removed from playlist successfully",
@@ -348,26 +389,31 @@ export async function addPlaylistSong(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-        userId: user.userId,
+    const access = await authorizePlaylist(user.userId, playlistId, "editSongs");
+    if (!access.ok) {
+      return res.status(access.status).json({
+        status: false,
+        message: access.message,
+        data: {},
+      });
+    }
+
+    const playlist = {
+      ...access.playlist,
+      _count: {
+        songs: await db.playlistSong.count({ where: { playlistId } }),
       },
-      select: {
-        _count: {
-          select: {
-            songs: true,
-          },
-        },
-        id: true,
-        userId: true,
-      },
+    };
+
+    const alreadyAdded = await db.playlistSong.findUnique({
+      where: { songId_playlistId: { songId, playlistId } },
+      select: { id: true },
     });
 
-    if (!playlist) {
-      return res.status(404).json({
+    if (alreadyAdded) {
+      return res.status(409).json({
         status: false,
-        message: "Playlist not found",
+        message: "Song is already in this playlist",
         data: {},
       });
     }
@@ -411,7 +457,15 @@ export async function addPlaylistSong(req: Request, res: Response) {
       data: {
         playlistId: playlistId,
         songId,
+        addedById: user.userId,
       },
+    });
+
+    void recordPlaylistChange({
+      playlist: access.playlist,
+      actorId: user.userId,
+      type: "SONG_ADDED",
+      payload: { songId },
     });
 
     return res.status(201).json({
@@ -450,33 +504,36 @@ export async function getUserPlaylist(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-        userId: user.userId,
-        isArchived: false,
-      },
-      include: {
-        _count: {
-          select: {
-            songs: true,
-          },
-        },
-      },
-    });
-
-    if (!playlist) {
-      return res.status(404).json({
+    const access = await authorizePlaylist(user.userId, playlistId, "view");
+    if (!access.ok) {
+      return res.status(access.status).json({
         status: false,
-        message: "Playlist not found",
+        message: access.message,
         data: {},
       });
     }
 
+    const [songCount, memberCount, owner] = await Promise.all([
+      db.playlistSong.count({ where: { playlistId } }),
+      db.playlistMember.count({ where: { playlistId, status: "ACCEPTED" } }),
+      db.user.findUnique({
+        where: { id: access.playlist.userId },
+        select: { id: true, name: true, image: true },
+      }),
+    ]);
+
     return res.status(200).json({
       status: true,
       message: "Success",
-      data: playlist,
+      data: {
+        ...access.playlist,
+        _count: {
+          songs: songCount,
+          members: memberCount,
+        },
+        owner,
+        myRole: access.role,
+      },
     });
   } catch (error) {
     console.error("GET PLAYLIST API ERROR", error);
@@ -594,23 +651,16 @@ export async function updateUserPlaylist(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-        userId: user.userId,
-        isArchived: false,
-      },
-    });
-
-    if (!playlist) {
-      return res.status(404).json({
+    const access = await authorizePlaylist(user.userId, playlistId, "editDetails");
+    if (!access.ok) {
+      return res.status(access.status).json({
         status: false,
-        message: "Playlist not found",
+        message: access.message,
         data: {},
       });
     }
 
-    await db.playList.update({
+    const updated = await db.playList.update({
       where: {
         id: playlistId,
       },
@@ -619,6 +669,12 @@ export async function updateUserPlaylist(req: Request, res: Response) {
         description: validatedData.data.description ?? null,
         private: validatedData.data.private,
       },
+    });
+
+    void recordPlaylistChange({
+      playlist: updated,
+      actorId: user.userId,
+      type: "DETAILS_UPDATED",
     });
 
     return res.status(200).json({
@@ -721,21 +777,16 @@ export async function getPlaylistExistingSongs(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-        userId: user.userId,
-        isArchived: false,
-      },
-    });
-
-    if (!playlist) {
-      return res.status(404).json({
+    const access = await authorizePlaylist(user.userId, playlistId, "view");
+    if (!access.ok) {
+      return res.status(access.status).json({
         status: false,
-        message: "Playlist not found",
+        message: access.message,
         data: {},
       });
     }
+
+    const playlist = access.playlist;
 
     const playlistSongs = await db.playlistSong.findMany({
       where :{
@@ -784,31 +835,40 @@ export async function addPlaylistSongsBulk(req: Request, res: Response) {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: validatedData.data.playlistId,
-        userId: user.userId,
-        isArchived: false,
-      },
-      include : {
-        _count : {
-          select : {
-            songs : true
-          }
-        }
-      }
-    });
-    if (!playlist) {
-      return res.status(404).json({
+    const access = await authorizePlaylist(user.userId, validatedData.data.playlistId, "editSongs");
+    if (!access.ok) {
+      return res.status(access.status).json({
         status: false,
-        message: "Playlist not found",
+        message: access.message,
         data: {},
       });
     }
 
+    const existing = await db.playlistSong.findMany({
+      where: { playlistId: access.playlist.id },
+      select: { songId: true },
+    });
+    const existingIds = new Set(existing.map((item) => item.songId));
+    const newSongIds = Array.from(new Set(validatedData.data.songIds)).filter((songId) => !existingIds.has(songId));
+
+    if (newSongIds.length === 0) {
+      return res.status(200).json({
+        status: true,
+        message: "Songs are already in this playlist",
+        data: {},
+      });
+    }
+
+    const playlist = {
+      ...access.playlist,
+      _count: {
+        songs: existing.length,
+      },
+    };
+
     const song = await db.song.findUnique({
       where: {
-        id: validatedData.data.songIds[0] as string,
+        id: newSongIds[0] as string,
       },
       select : {
         id : true,
@@ -842,10 +902,19 @@ export async function addPlaylistSongsBulk(req: Request, res: Response) {
     }
     
     await db.playlistSong.createMany({
-      data : validatedData.data.songIds.map((songId) => ({
+      data : newSongIds.map((songId) => ({
         playlistId: playlist.id,
         songId,
+        addedById: user.userId,
       })),
+    });
+
+    void recordPlaylistChange({
+      playlist: access.playlist,
+      actorId: user.userId,
+      type: "SONG_ADDED",
+      songCount: newSongIds.length,
+      payload: { count: newSongIds.length },
     });
 
     return res.status(201).json({
@@ -884,21 +953,15 @@ export const getAllPlaylistSongs = async (req: Request, res: Response) => {
       });
     }
 
-    const playlist = await db.playList.findUnique({
-      where: {
-        id: playlistId,
-        userId: user.userId,
-        isArchived: false,
-      },
-    });
-    if (!playlist) {
-
-      return res.status(404).json({
+    const access = await authorizePlaylist(user.userId, playlistId, "view");
+    if (!access.ok) {
+      return res.status(access.status).json({
         status: false,
-        message: "Playlist not found",
+        message: access.message,
         data: {},
       });
-    } 
+    }
+    const playlist = access.playlist;
     const playlistSongs = await db.playlistSong.findMany({
       where: {
         playlistId: playlist.id,

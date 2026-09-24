@@ -3,10 +3,12 @@ import { albumRouter, artistRouter, songRouter } from "./routes/index.js";
 import { playlistRouter } from "./routes/playlist.routes.js";
 import { userRouter } from "./routes/user.routes.js";
 import { authMiddleware } from "./middlewares/auth.middleware.js";
-import { connectDB, disconnectDB } from "./lib/db.js";
-// import { connectRedis, disconnectRedis } from "./lib/redis.js";
+import { connectDB, disconnectDB, ensureIndexes } from "./lib/db.js";
+import { connectRedis, disconnectRedis } from "./lib/redis.js";
+import { startNotificationWorker, stopNotificationWorker } from "./workers/notification.worker.js";
 import { notificationRouter } from "./routes/notification.route.js";
 import { paymentRouter } from "./routes/payment.route.js";
+import { jamRouter } from "./routes/jam.routes.js";
 
 const app = express();
 app.use(express.json());
@@ -30,11 +32,15 @@ app.use("/api/v2/playlist", playlistRouter);
 app.use("/api/v2/user", userRouter);
 app.use("/api/v2/notification", notificationRouter);
 app.use("/api/v2/payment", paymentRouter);
+app.use("/api/v2/jam", jamRouter);
 
 async function startServer() {
     await connectDB();
-    // await connectRedis();
-    
+    ensureIndexes();
+    connectRedis()
+        .then(startNotificationWorker)
+        .catch((error) => console.error("Starting without Redis; notifications are disabled", error));
+
     const server = app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
     });
@@ -42,7 +48,8 @@ async function startServer() {
     const shutdown = async (signal: string) => {
         console.log(`\n${signal} received. Shutting down gracefully...`);
         server.close(async () => {
-            // await disconnectRedis();
+            await stopNotificationWorker();
+            await disconnectRedis();
             await disconnectDB();
             console.log("Server closed");
             process.exit(0);

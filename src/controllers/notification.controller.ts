@@ -3,6 +3,39 @@ import { db } from "../lib/db.js";
 import type { Notification } from "../../generated/prisma/index.js";
 
 const LIMIT = 20;
+const ACTIONABLE_TYPES = new Set(["PLAYLIST_INVITE", "PLAYLIST_REQUEST"]);
+
+const memberIdOf = (notification: Notification) => {
+    const data = notification.data as Record<string, unknown> | null;
+    return typeof data?.memberId === "string" && /^[a-f\d]{24}$/i.test(data.memberId) ? data.memberId : null;
+};
+
+async function withRequestStatus(notifications: Notification[]) {
+    const memberIds = notifications
+        .filter((notification) => ACTIONABLE_TYPES.has(notification.type))
+        .map(memberIdOf)
+        .filter((id): id is string => id !== null);
+
+    if (memberIds.length === 0) return notifications;
+
+    const members = await db.playlistMember.findMany({
+        where: { id: { in: memberIds } },
+        select: { id: true, status: true },
+    });
+    const statusById = new Map(members.map((member) => [member.id, member.status]));
+
+    return notifications.map((notification) => {
+        const memberId = memberIdOf(notification);
+        if (!memberId || !ACTIONABLE_TYPES.has(notification.type)) return notification;
+        return {
+            ...notification,
+            data: {
+                ...(notification.data as Record<string, unknown>),
+                status: statusById.get(memberId) ?? "CANCELLED",
+            },
+        };
+    });
+}
 
 export async function getNotifications(req: Request, res: Response) {
     try {
@@ -20,11 +53,12 @@ export async function getNotifications(req: Request, res: Response) {
 
         let notifications : Notification[] = [];
 
-        if (cursor && typeof cursor !== "string") {
+        if (typeof cursor === "string" && /^[a-f\d]{24}$/i.test(cursor)) {
             notifications = await db.notification.findMany({
                 where: { userId: user.userId },
                 orderBy: { createdAt: "desc" },
                 take: LIMIT,
+                skip: 1,
                 cursor: { id: cursor },
             });
         } else {
@@ -42,7 +76,7 @@ export async function getNotifications(req: Request, res: Response) {
         }
 
         return res.json({
-            items: notifications,
+            items: await withRequestStatus(notifications),
             nextCursor,
         });
 

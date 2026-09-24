@@ -9,6 +9,10 @@ import {
   getUserOrderHistory,
   updateAccountSettings,
 } from "../controllers/account.controller.js";
+import {
+  registerDevice,
+  unregisterDevice,
+} from "../controllers/device.controller.js";
 
 export const userRouter = Router();
 
@@ -18,3 +22,5 @@ userRouter.delete("/history", deleteHistory);
 userRouter.get("/account", getAccountDetails);
 userRouter.post("/account", updateAccountSettings);
 userRouter.get("/payments/order-history", getUserOrderHistory);
+userRouter.post("/devices", registerDevice);
+userRouter.delete("/devices", unregisterDevice);

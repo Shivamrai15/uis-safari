@@ -6,7 +6,11 @@ export async function cache(
   res: Response,
   next: NextFunction
 ) {
-  const key = `cache:${req.url}`;
+  if (!redis.isReady) {
+    return next();
+  }
+
+  const key = `cache:user:${req.originalUrl}`;
 
   try {
     const cachedData = await redis.get(key);

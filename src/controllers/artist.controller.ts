@@ -183,56 +183,55 @@ export async function getFavoriteArtists(req: Request, res: Response) {
     }
 
     const favoriteArtists = await db.$runCommandRaw({
-      aggregate: "Artist",
+      aggregate: "View",
       pipeline: [
+        {
+          $match: {
+            userId: { $oid: user.userId },
+          },
+        },
         {
           $lookup: {
             from: "Song",
-            localField: "_id",
-            foreignField: "artistIds",
-            as: "songs",
+            localField: "songId",
+            foreignField: "_id",
+            as: "song",
           },
         },
         {
-          $lookup: {
-            from: "View",
-            let: { songIds: "$songs._id" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $in: ["$songId", "$$songIds"] },
-                      { $eq: ["$userId", { $oid: user.userId }] },
-                    ],
-                  },
-                },
-              },
-            ],
-            as: "userViews",
+          $unwind: "$song",
+        },
+        {
+          $unwind: "$song.artistIds",
+        },
+        {
+          $group: {
+            _id: "$song.artistIds",
+            viewCount: { $sum: 1 },
           },
         },
         {
-          $addFields: {
-            viewCount: { $size: "$userViews" },
-          },
-        },
-        {
-          $match: {
-            viewCount: { $gt: 0 },
-          },
-        },
-        {
-          $sort: { viewCount: -1 },
+          $sort: { viewCount: -1, _id: 1 },
         },
         {
           $limit: 15,
         },
         {
+          $lookup: {
+            from: "Artist",
+            localField: "_id",
+            foreignField: "_id",
+            as: "artist",
+          },
+        },
+        {
+          $unwind: "$artist",
+        },
+        {
           $project: {
             _id: 1,
-            name: 1,
-            image: 1,
+            name: "$artist.name",
+            image: "$artist.image",
           },
         },
       ],
