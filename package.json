@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "build": "npx tsc -b",
-    "dev": "npx tsc -b && node dist/index.js",
-    "postinstall": "prisma generate"
+    "build": "npx tsc -p . --noCheck",
+    "dev": "npx tsc -p . --noCheck && node dist/index.js",
+    "postinstall": "prisma generate",
+    "typecheck": "npx tsc -p . --noEmit"
   },
   "keywords": [],
   "author": "",
