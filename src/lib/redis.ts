@@ -1,11 +1,14 @@
 import { createClient } from 'redis';
 
+const [redisHost, redisPortText] = (process.env.REDIS_URL || 'localhost').split(':');
+const redisPort = Number(redisPortText) || Number(process.env.REDIS_PORT) || 16296;
+
 export const redis = createClient({
     username: 'default',
     password: process.env.REDIS_PASSWORD || '',
     socket: {
-        host: process.env.REDIS_URL || 'localhost',
-        port: 16296
+        host: redisHost,
+        port: redisPort
     }
 });
 
