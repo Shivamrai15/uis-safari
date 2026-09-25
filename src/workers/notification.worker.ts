@@ -36,6 +36,8 @@ async function dispatch(job: NotificationJob) {
                 title: job.title,
                 message: job.message,
                 image: job.image ?? null,
+                webIcon: job.webIcon ?? null,
+                appIcon: job.appIcon ?? null,
                 appActionUrl: job.appActionUrl ?? null,
                 webActionUrl: job.webActionUrl ?? null,
                 ...(job.data ? { data: job.data } : {}),
@@ -55,7 +57,10 @@ async function dispatch(job: NotificationJob) {
 
 async function deliverPush(userIds: string[], job: NotificationJob) {
     const devices = await db.deviceToken.findMany({
-        where: { userId: { in: userIds } },
+        where: {
+            userId: { in: userIds },
+            ...(job.devicesRegisteredBefore ? { updatedAt: { lt: new Date(job.devicesRegisteredBefore) } } : {}),
+        },
         select: { token: true },
     });
 

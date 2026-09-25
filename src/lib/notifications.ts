@@ -14,12 +14,15 @@ export interface NotificationJob {
     message: string;
     channelId: NotificationChannel;
     image?: string;
+    webIcon?: string;
+    appIcon?: string;
     appActionUrl?: string;
     webActionUrl?: string;
     categoryId?: string;
     tag?: string;
     data?: Record<string, string>;
     persist?: boolean;
+    devicesRegisteredBefore?: number;
 }
 
 export async function publishNotification(job: NotificationJob): Promise<void> {
